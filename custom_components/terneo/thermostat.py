@@ -1,10 +1,10 @@
-import sys
+import math
 import requests
 import logging
 import time
+from threading import RLock
 
 from requests.auth import HTTPBasicAuth
-from simplejson.errors import JSONDecodeError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class Thermostat:
     """
 
     def __init__(self, serialnumber, host, port=80, username=None, password=None):
-        if username or password and not username and password:
+        if bool(username) != bool(password):
             raise ValueError(
                 "Username and Password must both be specified, if either are specified."
             )
@@ -45,14 +45,9 @@ class Thermostat:
         self._state = None
         self._available = False
 
-        self._last_request = time.time()
-
-        try:
-            r = requests.get(self._base_url.format(endpoint="api.html")[:-4])
-            assert r.status_code == 200
-            self._available = True
-        except Exception as e:
-            raise type(e)("Connection to Thermostat failed with: {}".format(str(e))).with_traceback(sys.exc_info()[2])
+        self._request_lock = RLock()
+        self._last_request = time.monotonic() - 1
+        # Register offline devices too; HA polling will retry when they return.
 
     def _get_url(self, endpoint):
         return self._base_url.format(endpoint=endpoint)
@@ -71,7 +66,7 @@ class Thermostat:
         response : `requests.Response`
             The result of the request.
         """
-        kwergs = {'auth': self.auth}
+        kwergs = {'auth': self.auth, 'timeout': 5}
         kwergs.update(kwargs)
 
         r = requests.get(self._get_url(endpoint), **kwergs)
@@ -91,39 +86,25 @@ class Thermostat:
         response : `requests.Response`
             The result of the request.
         """
-        kwergs = {'auth': self.auth}
-
+        kwergs = {'auth': self.auth, 'timeout': 5}
         kwergs.update(kwargs)
-
-        start_time = time.time()
-        if start_time - self._last_request < 1:
-            time.sleep(1)
-
-        try:
-            r = requests.post(self._get_url(endpoint), timeout=5, **kwergs)
-        except Exception as e:
-            self._available = False
-            self._last_request = time.time()
-            _LOGGER.error(e)
-            return False
-        end_time = time.time()
-        self._last_request = end_time
-        try:
-            content = r.json()
-        except JSONDecodeError:
-            return False
-        except Exception as e:
-            _LOGGER.error(e)
-            return False
-
-        if content.get('status', '') == 'timeout':
-            if 'sn' in kwargs['json']:
-                kwargs['json']['sn'] = '...filtered...'
-            _LOGGER.warning(f'terneo timeout: {kwargs}')
-            return False
-        
-        self._available = True
-        return content
+        with self._request_lock:
+            delay = 1 - (time.monotonic() - self._last_request)
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                r = requests.post(self._get_url(endpoint), **kwergs)
+                r.raise_for_status()
+                content = r.json()
+                if not isinstance(content, dict) or content.get('status') == 'timeout':
+                    raise ValueError("Invalid response or device timeout")
+            except (requests.RequestException, ValueError) as err:
+                self._available = False
+                _LOGGER.warning("Terneo request failed at %s: %s", self._get_url(endpoint), err)
+                return False
+            finally:
+                self._last_request = time.monotonic()
+            return content
 
     def status(self):
         """
@@ -138,21 +119,18 @@ class Thermostat:
         :return: bool
         """
         r = self.post(json={"cmd": 1, "sn": self.sn})
-        if r and 'par' in r:
+        if r and isinstance(r.get('par'), list):
             for a in r['par']:
-                if a[0] == 125:
-                    return a[2] == "0"
-        return False
+                if isinstance(a, list) and len(a) >= 3 and a[0] == 125:
+                    if str(a[2]) in ("0", "1"):
+                        return str(a[2]) == "0"
+        raise ValueError("Missing or invalid power state")
 
     @property
     def temperature(self):
         """
         Current value of the temperature sensor in C
         """
-        if self._temperature is None:
-            data = self.status()
-            if data:
-                self._temperature = self.get_temperature(data)
         return self._temperature
 
     @staticmethod
@@ -164,10 +142,6 @@ class Thermostat:
         """
         Current thermostat setpoint in C
         """
-        if self._setpoint is None:
-            data = self.status()
-            if data:
-                self._setpoint = self.get_setpoint(data)
         return self._setpoint
 
     @setpoint.setter
@@ -188,10 +162,6 @@ class Thermostat:
         mode : `int`
             `0` for schedule mode, `3` for manual mode and `4` for away mode.
         """
-        if self._mode is None:
-            data = self.status()
-            if data:
-                self._mode = self.get_mode(data)
         return self._mode
 
     def get_mode(self, data):
@@ -222,10 +192,6 @@ class Thermostat:
         state : `bool`
             returns `True` if the relay is on and `False` if the relay is off.
         """
-        if self._state is None:
-            data = self.status()
-            if data:
-                self._state = self.get_state(data)
         return self._state
 
     @property
@@ -243,9 +209,24 @@ class Thermostat:
         return self.post(json=dict(sn=self.sn, par=[[125, 7, "1"]]))
 
     def update(self):
-        data = self.status()
-        if data:
-            self._setpoint = self.get_setpoint(data)
-            self._temperature = self.get_temperature(data)
-            self._mode = self.get_mode(data)
-            self._state = self.get_state(data)
+        with self._request_lock:
+            data = self.status()
+            try:
+                if not data:
+                    self._available = False
+                    return
+                setpoint = self.get_setpoint(data)
+                temperature = self.get_temperature(data)
+                if not math.isfinite(setpoint) or not math.isfinite(temperature):
+                    raise ValueError("Non-finite temperature")
+                mode = self.get_mode(data)
+                state = self.get_state(data)
+            except (KeyError, TypeError, ValueError, OverflowError) as err:
+                self._available = False
+                _LOGGER.warning("Invalid Terneo status at %s: %s", self._get_url('api'), err)
+                return
+            self._setpoint = setpoint
+            self._temperature = temperature
+            self._mode = mode
+            self._state = state
+            self._available = True

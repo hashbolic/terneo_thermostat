@@ -1,8 +1,9 @@
 {
   "domain": "terneo",
   "name": "Terneo Thermostat",
-  "documentation": "https://github.com/Makave1i/terneo_thermostat",
-  "version": "1.0.1",
+  "documentation": "https://github.com/hashbolic/terneo_thermostat",
+  "issue_tracker": "https://github.com/hashbolic/terneo_thermostat/issues",
+  "version": "1.0.2",
   "requirements": [
     "requests",
     "voluptuous",
@@ -10,6 +11,7 @@
   ],
   "dependencies": [],
   "codeowners": [
+    "@hashbolic",
     "@Makave1i",
     "@DevRedOWL"
   ]
