@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3 — 2026-10-23
+
+- Retry a failed telemetry request once after a connection error, HTTP error,
+  malformed JSON or device timeout. A valid second response updates the entity
+  within the same poll; two failed reads still mark it unavailable.
+- Keep the five-second request timeout and one-second gap between requests.
+  A failed polling cycle can now take about eleven seconds.
+- Write commands are still sent only once. No YAML or entity ID changes.
+- Regression suite: 27 tests pass, including transient and persistent outages.
+
 ## 1.0.2 — 2026-10-23
 
 - Register offline thermostats so normal polling can restore availability.

@@ -7,6 +7,8 @@ This fork includes recovery fixes for intermittently unavailable thermostats.
 Devices remain registered when offline at startup and recover on a successful
 poll. Invalid responses mark the entity unavailable; requests to each device
 are serialized. Existing YAML configuration and entity IDs are preserved.
+Version 1.0.3 retries a failed telemetry request once before marking the device
+unavailable. Persistent connectivity failures remain visible in Home Assistant.
 
 ## Install or update with HACS
 

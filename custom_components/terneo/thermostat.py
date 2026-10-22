@@ -111,6 +111,9 @@ class Thermostat:
         Get the status dictionary from the thermostat
         """
         r = self.post(json={"cmd": 4, "sn": self.sn})
+        if r is False:
+            # A transient disconnect may interrupt telemetry; never retry writes.
+            r = self.post(json={"cmd": 4, "sn": self.sn})
         return r
 
     def is_on(self):

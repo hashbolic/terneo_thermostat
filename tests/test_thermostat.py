@@ -33,15 +33,63 @@ def transport(monkeypatch):
 def test_offline_startup_recovers_on_later_poll(transport):
     get, post = transport
     get.side_effect = requests.Timeout("offline")
-    post.side_effect = [requests.Timeout("offline"), response()]
+    post.side_effect = [requests.Timeout("offline"), requests.Timeout("offline"), response()]
     device = Thermostat("test", "example.invalid")
     device.update()
     assert not device.available
     assert (device.temperature, device.setpoint, device.mode, device.state) == (None,) * 4
-    assert post.call_count == 1  # Reading properties must not trigger extra requests.
+    assert post.call_count == 2  # Reading properties must not trigger extra requests.
     device.update()
     assert device.available
     assert (device.temperature, device.setpoint, device.mode, device.state) == (20.4375, 20, 3, False)
+
+
+@pytest.mark.parametrize("failure", [
+    requests.Timeout("temporary disconnect"),
+    requests.ConnectionError("connection lost"),
+    response({"status": "timeout"}),
+    response({}, 503),
+])
+def test_single_failed_read_recovers_within_same_poll(transport, failure):
+    _, post = transport
+    device = Thermostat("test", "example.invalid")
+    device.update()
+    post.reset_mock()
+    post.side_effect = [failure, response({**STATUS, "t.1": "336"})]
+    device.update()
+    assert device.available
+    assert device.temperature == 21
+    assert post.call_count == 2
+    assert all(call.kwargs["json"] == {"cmd": 4, "sn": "test"}
+               for call in post.call_args_list)
+
+
+def test_truncated_json_is_retried_once(transport):
+    _, post = transport
+    bad = response()
+    bad.json.side_effect = ValueError("Unterminated string")
+    post.side_effect = [bad, response()]
+    device = Thermostat("test", "example.invalid")
+    device.update()
+    assert device.available
+    assert device.setpoint == 20
+    assert post.call_count == 2
+
+
+def test_retry_limit_preserves_real_outage_and_later_recovery(transport):
+    _, post = transport
+    device = Thermostat("test", "example.invalid")
+    device.update()
+    post.reset_mock()
+    post.side_effect = requests.Timeout("still offline")
+    device.update()
+    assert not device.available
+    assert device.temperature == 327 / 16
+    assert post.call_count == 2
+    post.side_effect = None
+    post.return_value = response()
+    device.update()
+    assert device.available
 
 
 @pytest.mark.parametrize("bad", [

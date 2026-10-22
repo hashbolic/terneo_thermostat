@@ -3,7 +3,7 @@
   "name": "Terneo Thermostat",
   "documentation": "https://github.com/hashbolic/terneo_thermostat",
   "issue_tracker": "https://github.com/hashbolic/terneo_thermostat/issues",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "requirements": [
     "requests",
     "voluptuous",
